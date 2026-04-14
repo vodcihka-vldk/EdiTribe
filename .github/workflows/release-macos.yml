@@ -32,10 +32,10 @@ jobs:
         run: npm run build
 
       - name: Build macOS ZIP artifacts
-        run: npm run dist:mac
+        run: npm run dist:mac -- --publish never
 
       - name: Build macOS DMG artifacts
-        run: npm run dist:mac:dmg
+        run: npm run dist:mac:dmg -- --publish never
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
