@@ -136,6 +136,16 @@ function applySortToList(
 }
 
 type ExportMode = 'e2s-all' | 'placeholder-sort';
+type ExportIssue = {
+  slot: number | null;
+  sample: string;
+  reason: string;
+  kind?: 'slot' | 'source' | 'layout' | 'other';
+};
+type ExportTrimEstimate = {
+  trimRatio: number;
+  trimmedDurationSec: number;
+};
 const MAX_SAMPLE_RAM_BYTES = 26214396; // 26.21 MB / ~25 MiB (Electribe 2 sample RAM limit)
 const MIN_TRIM_SECONDS = 0.01;
 
@@ -154,6 +164,8 @@ function App() {
   const [exportFileName, setExportFileName] = useState('e2sSample');
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMessage, setExportMessage] = useState<string>('');
+  const [exportIssueDetails, setExportIssueDetails] = useState<ExportIssue[]>([]);
+  const [exportTrimEstimates, setExportTrimEstimates] = useState<Record<number, ExportTrimEstimate>>({});
   const [samples, setSamples] = useState<Sample[]>([]);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]); // Multi-select
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null); // For shift selection
@@ -1708,7 +1720,7 @@ function App() {
     const bits = Number(sample.bitDepth);
     const channels = Number(sample.channels);
     if (!Number.isFinite(rate) || !Number.isFinite(bits) || !Number.isFinite(channels)) return false;
-    return rate < 48000 && bits === 16 && channels === 1;
+    return rate === 48000 && bits === 16 && channels === 1;
   };
 
   const getEffectiveOutputAudio = (sample: Sample) => {
@@ -1730,7 +1742,7 @@ function App() {
     };
   };
 
-  const calcConvertedSize = (sample: Sample) => {
+  const calcConvertedSizeBase = (sample: Sample) => {
     if (shouldPreserveSourceFormat(sample)) {
       return sample.size;
     }
@@ -1754,6 +1766,16 @@ function App() {
     };
 
     return sample.size * rateRatio * frameRatio * formatRatio[conversion.format];
+  };
+
+  const calcConvertedSize = (sample: Sample, index?: number) => {
+    const baseSize = calcConvertedSizeBase(sample);
+    if (!Number.isFinite(index)) return baseSize;
+    const estimate = exportTrimEstimates[index as number];
+    if (!estimate) return baseSize;
+    const ratio = Number(estimate.trimRatio);
+    if (!Number.isFinite(ratio) || ratio <= 0) return baseSize;
+    return baseSize * Math.min(1, Math.max(0.0001, ratio));
   };
 
   const isElectriberPreset = (c: ConversionSettings): boolean =>
@@ -1807,6 +1829,7 @@ function App() {
 
     setExportBusy(true);
     setExportMessage('Export in progress...');
+    setExportIssueDetails([]);
     try {
       const payload = {
         outputDirectory: exportDirectory,
@@ -1830,9 +1853,16 @@ function App() {
 
       const result = await window.electronAPI.exportE2sAll(payload);
       if (!result?.ok) {
-        setExportMessage(result?.message || 'Export failed.');
+        const issueCount = result?.issueDetails?.length || 0;
+        const shortMessage = issueCount > 0 
+          ? `Export aborted: ${issueCount} sample(s) with issues (see details below).`
+          : (result?.message || 'Export failed.');
+        setExportMessage(shortMessage);
+        setExportIssueDetails(result?.issueDetails || []);
         return;
       }
+
+      setExportIssueDetails([]);
 
       const warnings = result.warnings?.length ? ` Warnings: ${result.warnings.length}.` : '';
       const summary = result.summary || {};
@@ -1973,7 +2003,65 @@ function App() {
     return () => cancelScheduledPreview();
   }, []);
 
-  const usedSpace = chosen.reduce((acc, s) => acc + calcConvertedSize(s), 0);
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!exportConvert || chosen.length === 0 || !window.electronAPI?.estimateExportAutotrim) {
+      setExportTrimEstimates({});
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await window.electronAPI?.estimateExportAutotrim?.({
+            shouldConvert: exportConvert,
+            conversion,
+            samples: chosen.map((s, index) => ({
+              index,
+              name: s.name,
+              path: s.path,
+              sourceKind: s.sourceKind,
+              sourceAllPath: s.sourceAllPath,
+              sourceOffset: s.sourceOffset,
+              sourceLength: s.sourceLength,
+            })),
+          });
+
+          if (cancelled) return;
+          if (!result?.ok || !Array.isArray(result.estimates)) {
+            setExportTrimEstimates({});
+            return;
+          }
+
+          const next: Record<number, ExportTrimEstimate> = {};
+          for (const entry of result.estimates) {
+            const idx = Number(entry?.index);
+            if (!Number.isFinite(idx) || idx < 0) continue;
+            next[Math.trunc(idx)] = {
+              trimRatio: Number.isFinite(Number(entry.trimRatio)) ? Number(entry.trimRatio) : 1,
+              trimmedDurationSec: Number.isFinite(Number(entry.trimmedDurationSec)) ? Number(entry.trimmedDurationSec) : 0,
+            };
+          }
+
+          setExportTrimEstimates(next);
+        } catch {
+          if (!cancelled) {
+            setExportTrimEstimates({});
+          }
+        }
+      })();
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [chosen, conversion, exportConvert]);
+
+  const usedSpace = chosen.reduce((acc, s, idx) => acc + calcConvertedSize(s, idx), 0);
   const maxSpace = MAX_SAMPLE_RAM_BYTES;
   const isOverRam = ramLimitApplies && usedSpace > maxSpace;
   const headroomBytes = maxSpace - usedSpace;
@@ -2213,6 +2301,8 @@ function App() {
                 <ul className="chosen-list">
                     {sortedChosenWithIndex.map(({ sample: s, index: i }) => {
                       const output = getEffectiveOutputAudio(s);
+                      const trimEstimate = exportTrimEstimates[i];
+                      const trimmedSeconds = Number(trimEstimate?.trimmedDurationSec || 0);
                       return (
                         <li
                           key={i}
@@ -2305,8 +2395,11 @@ function App() {
                             <span>{getEffectiveTypeForSample(s)}</span>
                             <span>{conversion.volume}</span>
                             <span className="simulated-size">
-                              {(calcConvertedSize(s) / 1024).toFixed(1)} KB {output.preserved ? 'preserved' : 'simulated'}
+                              {(calcConvertedSize(s, i) / 1024).toFixed(1)} KB {output.preserved ? 'preserved' : 'simulated'}
                             </span>
+                            {trimmedSeconds > 0.01 && (
+                              <span className="auto-trim-size">trim -{trimmedSeconds.toFixed(2)}s</span>
+                            )}
                           </div>
                         </li>
                       );
@@ -2684,6 +2777,43 @@ function App() {
               </div>
 
               {exportMessage && <div className="export-message">{exportMessage}</div>}
+
+              {exportIssueDetails.length > 0 && (
+                <div className="export-issues">
+                  {(['slot', 'source', 'layout', 'other'] as const).map(kind => {
+                    const items = exportIssueDetails.filter(issue => (issue.kind || 'other') === kind);
+                    if (!items.length) return null;
+                    const labels = {
+                      slot: 'Slot issues',
+                      source: 'Source issues',
+                      layout: 'RIFF/layout issues',
+                      other: 'Other issues',
+                    } as const;
+                    const badge = {
+                      slot: 'bad',
+                      source: 'warn',
+                      layout: 'warn',
+                      other: 'info',
+                    } as const;
+                    return (
+                      <div className="export-issue-group" key={kind}>
+                        <div className="export-issue-group-title">{labels[kind]} <span className="export-issue-group-count">({items.length})</span></div>
+                        <div className="export-issue-list">
+                          {items.map((issue, index) => (
+                            <div className="export-issue-item" key={`${kind}-${issue.slot ?? 'x'}-${index}`}>
+                              <div className="export-issue-item-header">
+                                <span className={`export-issue-badge ${badge[kind]}`}>{issue.slot === null ? 'Slot --' : `Slot ${issue.slot}`}</span>
+                                <span className="export-issue-text">{issue.sample}</span>
+                              </div>
+                              <span className="export-issue-reason">{issue.reason}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               {isOverRam && (
                 <div className="export-message over-limit-message">

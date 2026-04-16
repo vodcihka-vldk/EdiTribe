@@ -263,7 +263,161 @@ function encodePcmSample(buffer, offset, bitDepth, value) {
   }
 }
 
-function convertWavBufferForE2S(buffer, conversion) {
+function detectAutoTrimRange(buffer, options = {}) {
+  const parsed = parseWavForConversion(buffer);
+  if (!parsed) return null;
+
+  const inputChannels = parsed.channels;
+  const inputRate = parsed.sampleRate;
+  const inputBits = parsed.bitDepth;
+  const bytesPerSample = inputBits / 8;
+  const frameBytes = inputChannels * bytesPerSample;
+
+  if (!inputChannels || !inputRate || !inputBits || !frameBytes || parsed.dataSize < frameBytes) {
+    return null;
+  }
+
+  const totalFrames = Math.floor(parsed.dataSize / frameBytes);
+  if (totalFrames <= 0) return null;
+
+  const thresholdFloor = Number.isFinite(Number(options.silenceThreshold))
+    ? Math.max(0, Number(options.silenceThreshold))
+    : 0.003;
+  const thresholdCeiling = Number.isFinite(Number(options.silenceThresholdCeiling))
+    ? Math.max(thresholdFloor, Number(options.silenceThresholdCeiling))
+    : 0.03;
+  const headPaddingFrames = Math.max(0, Math.round(inputRate * (Number(options.headPaddingSec) || 0.01)));
+  const tailPaddingFrames = Math.max(0, Math.round(inputRate * (Number(options.tailPaddingSec) || 0.05)));
+
+  const getFrameLevel = (frameIndex) => {
+    let offset = parsed.dataStart + frameIndex * frameBytes;
+    let peak = 0;
+    for (let channel = 0; channel < inputChannels; channel++) {
+      const sample = Math.abs(decodePcmSample(buffer, offset, inputBits, parsed.audioFormat));
+      if (sample > peak) peak = sample;
+      offset += bytesPerSample;
+    }
+    return peak;
+  };
+
+  let peakLevel = 0;
+  for (let frame = 0; frame < totalFrames; frame++) {
+    const level = getFrameLevel(frame);
+    if (level > peakLevel) peakLevel = level;
+  }
+
+  if (peakLevel <= 0) {
+    return {
+      parsed,
+      trimmed: false,
+      startFrame: 0,
+      endFrameExclusive: totalFrames,
+      totalFrames,
+      peakLevel,
+      threshold: thresholdFloor,
+    };
+  }
+
+  const threshold = Math.min(thresholdCeiling, Math.max(thresholdFloor, peakLevel * 0.02));
+
+  let startFrame = 0;
+  while (startFrame < totalFrames && getFrameLevel(startFrame) <= threshold) {
+    startFrame += 1;
+  }
+
+  let endFrame = totalFrames - 1;
+  while (endFrame >= startFrame && getFrameLevel(endFrame) <= threshold) {
+    endFrame -= 1;
+  }
+
+  if (startFrame === 0 && endFrame === totalFrames - 1) {
+    return {
+      parsed,
+      trimmed: false,
+      startFrame: 0,
+      endFrameExclusive: totalFrames,
+      totalFrames,
+      peakLevel,
+      threshold,
+    };
+  }
+
+  startFrame = Math.max(0, startFrame - headPaddingFrames);
+  endFrame = Math.min(totalFrames - 1, endFrame + tailPaddingFrames);
+
+  if (endFrame < startFrame) {
+    return {
+      parsed,
+      trimmed: false,
+      startFrame: 0,
+      endFrameExclusive: totalFrames,
+      totalFrames,
+      peakLevel,
+      threshold,
+    };
+  }
+
+  return {
+    parsed,
+    trimmed: startFrame > 0 || endFrame < totalFrames - 1,
+    startFrame,
+    endFrameExclusive: endFrame + 1,
+    totalFrames,
+    peakLevel,
+    threshold,
+  };
+}
+
+function autoTrimWavBuffer(buffer, options = {}) {
+  const trimRange = detectAutoTrimRange(buffer, options);
+  if (!trimRange || !trimRange.trimmed) {
+    return {
+      buffer,
+      trimmed: false,
+      trimmedStartSec: 0,
+      trimmedEndSec: 0,
+      trimmedDurationSec: 0,
+      startFrame: 0,
+      endFrameExclusive: trimRange ? trimRange.totalFrames : 0,
+      totalFrames: trimRange ? trimRange.totalFrames : 0,
+      sampleRate: trimRange && trimRange.parsed ? trimRange.parsed.sampleRate : 0,
+    };
+  }
+
+  const sampleRate = trimRange.parsed.sampleRate;
+  const startSec = trimRange.startFrame / sampleRate;
+  const endSec = trimRange.endFrameExclusive / sampleRate;
+  const trimmedBuffer = trimWavBuffer(buffer, startSec, endSec);
+  if (!trimmedBuffer) {
+    return {
+      buffer,
+      trimmed: false,
+      trimmedStartSec: 0,
+      trimmedEndSec: 0,
+      trimmedDurationSec: 0,
+      startFrame: 0,
+      endFrameExclusive: trimRange.totalFrames,
+      totalFrames: trimRange.totalFrames,
+      sampleRate,
+    };
+  }
+
+  return {
+    buffer: trimmedBuffer,
+    trimmed: true,
+    trimmedStartSec: startSec,
+    trimmedEndSec: endSec,
+    trimmedDurationSec: Math.max(0, (trimRange.totalFrames / sampleRate) - (endSec - startSec)),
+    startFrame: trimRange.startFrame,
+    endFrameExclusive: trimRange.endFrameExclusive,
+    totalFrames: trimRange.totalFrames,
+    sampleRate,
+    peakLevel: trimRange.peakLevel,
+    threshold: trimRange.threshold,
+  };
+}
+
+function convertWavBufferForE2S(buffer, conversion, options = {}) {
   const parsed = parseWavForConversion(buffer);
   if (!parsed) return null;
 
@@ -301,8 +455,6 @@ function convertWavBufferForE2S(buffer, conversion) {
     ? Math.min(requestedBits, 16)
     : 16;
 
-  const outFrameCount = Math.max(1, Math.round((inputFrameCount * outRate) / inputRate));
-
   const inputChannelData = Array.from({ length: inputChannels }, () => new Float32Array(inputFrameCount));
   let readOffset = parsed.dataStart;
   for (let frame = 0; frame < inputFrameCount; frame++) {
@@ -312,21 +464,41 @@ function convertWavBufferForE2S(buffer, conversion) {
     }
   }
 
+  const trimRange = options.autoTrimSilence === false ? null : detectAutoTrimRange(buffer, options);
+  const sourceStartFrame = trimRange && trimRange.trimmed ? trimRange.startFrame : 0;
+  const sourceEndFrameExclusive = trimRange && trimRange.trimmed ? trimRange.endFrameExclusive : inputFrameCount;
+  const sourceFrameCount = Math.max(1, sourceEndFrameExclusive - sourceStartFrame);
+  if (trimRange && trimRange.trimmed && typeof options.onAutoTrimmed === 'function') {
+    options.onAutoTrimmed({
+      trimmedStartSec: trimRange.trimmedStartSec,
+      trimmedEndSec: trimRange.trimmedEndSec,
+      trimmedDurationSec: trimRange.trimmedDurationSec,
+      startFrame: trimRange.startFrame,
+      endFrameExclusive: trimRange.endFrameExclusive,
+      totalFrames: trimRange.totalFrames,
+      sampleRate: trimRange.sampleRate,
+      peakLevel: trimRange.peakLevel,
+      threshold: trimRange.threshold,
+    });
+  }
+
+  const outFrameCount = Math.max(1, Math.round((sourceFrameCount * outRate) / inputRate));
+
   const resampled = Array.from({ length: inputChannels }, () => new Float32Array(outFrameCount));
   for (let ch = 0; ch < inputChannels; ch++) {
     const src = inputChannelData[ch];
-    if (outFrameCount === 1 || inputFrameCount === 1) {
-      resampled[ch][0] = src[0] || 0;
+    if (outFrameCount === 1 || sourceFrameCount === 1) {
+      resampled[ch][0] = src[sourceStartFrame] || 0;
       continue;
     }
 
-    const scale = (inputFrameCount - 1) / (outFrameCount - 1);
+    const scale = (sourceFrameCount - 1) / (outFrameCount - 1);
     for (let i = 0; i < outFrameCount; i++) {
       const pos = i * scale;
       const idx = Math.floor(pos);
       const frac = pos - idx;
-      const a = src[idx] || 0;
-      const b = src[Math.min(idx + 1, inputFrameCount - 1)] || a;
+      const a = src[sourceStartFrame + idx] || 0;
+      const b = src[Math.min(sourceStartFrame + idx + 1, sourceEndFrameExclusive - 1)] || a;
       resampled[ch][i] = a + (b - a) * frac;
     }
   }
@@ -550,7 +722,7 @@ function shouldBypassConversionForSample(sample, sourceMetadata, options = {}) {
   const channels = Number(sourceMetadata && sourceMetadata.channels);
   if (Number.isFinite(rate) && Number.isFinite(bitDepth) && Number.isFinite(channels)) {
     // Keep original quality for already Electribe-friendly samples.
-    if (rate < 48000 && bitDepth === 16 && channels === 1) {
+    if (rate === 48000 && bitDepth === 16 && channels === 1) {
       return true;
     }
   }
@@ -560,9 +732,23 @@ function shouldBypassConversionForSample(sample, sourceMetadata, options = {}) {
 
 function normalizeWavForE2S(buffer, slot, sampleName, sample, sourceMetadata = {}, options = {}) {
   let workingBuffer = buffer;
+  const shouldAutoTrimSilence = options.autoTrimSilence !== false && options.shouldConvert !== false;
+  if (shouldAutoTrimSilence) {
+    const trimmed = autoTrimWavBuffer(workingBuffer, options);
+    if (trimmed && trimmed.trimmed) {
+      workingBuffer = trimmed.buffer;
+      if (typeof options.onAutoTrimmed === 'function') {
+        options.onAutoTrimmed(trimmed);
+      }
+    }
+  }
+
   const shouldConvertForSample = !shouldBypassConversionForSample(sample, sourceMetadata, options);
   if (shouldConvertForSample) {
-    const converted = convertWavBufferForE2S(workingBuffer, options.conversion || {});
+    const converted = convertWavBufferForE2S(workingBuffer, options.conversion || {}, {
+      ...options,
+      autoTrimSilence: false,
+    });
     if (!converted) return null;
     workingBuffer = converted;
   }
@@ -685,13 +871,61 @@ function buildE2SAllBinary(samples, options = {}) {
 
   const sourceCache = new Map();
   const bySlot = new Map();
-  let validationErrors = 0;
+  const exportIssues = [];
+
+  const describeSample = (sample) => {
+    const name = sample && sample.name ? sample.name : 'Unknown';
+    const pathLabel = sample && (sample.originalPath || sample.path || sample.sourceAllPath)
+      ? ` (${sample.originalPath || sample.path || sample.sourceAllPath})`
+      : '';
+    return `"${name}"${pathLabel}`;
+  };
+
+  const recordIssue = (sample, reason, slotValue, kind) => {
+    exportIssues.push({
+      slot: Number.isFinite(slotValue) ? slotValue : null,
+      sample: describeSample(sample),
+      reason,
+      kind,
+    });
+  };
+
+  const formatExportIssues = (issues) => {
+    const grouped = new Map();
+
+    for (const issue of issues) {
+      const kind = issue.kind || 'other';
+      const list = grouped.get(kind) || [];
+      list.push(issue);
+      grouped.set(kind, list);
+    }
+
+    const titleByKind = {
+      slot: 'Slot issues',
+      source: 'Source issues',
+      layout: 'RIFF/layout issues',
+      other: 'Other issues',
+    };
+
+    const formatLine = (issue) => {
+      const slotLabel = Number.isFinite(issue.slot) ? `Slot ${issue.slot}` : 'Slot --';
+      return `${slotLabel}: ${issue.sample} - ${issue.reason}`;
+    };
+
+    const sections = [];
+    for (const [kind, list] of grouped.entries()) {
+      sections.push(`${titleByKind[kind] || titleByKind.other} (${list.length}):\n${list.map(formatLine).join('\n')}`);
+    }
+
+    return `Export aborted: ${issues.length} sample(s) could not be exported.\n${sections.join('\n\n')}`;
+  };
+
   for (const sample of samples) {
     const rawSlot = Number(sample.slot);
     const slot = Math.trunc(rawSlot);
     if (!Number.isFinite(rawSlot) || slot < 1 || slot > E2S_OFFSET_ENTRY_COUNT || rawSlot !== slot) {
       warnings.push(`Skipping sample "${sample.name || 'Unknown'}": invalid slot ${sample.slot}.`);
-      validationErrors += 1;
+      recordIssue(sample, `invalid slot ${sample.slot}.`, rawSlot, 'slot');
       continue;
     }
 
@@ -699,7 +933,7 @@ function buildE2SAllBinary(samples, options = {}) {
       warnings.push(
         `Slot ${slot} is not writable on stock firmware. User samples must start at slot ${E2S_FIRST_USER_DISPLAY_SLOT}.`
       );
-      validationErrors += 1;
+      recordIssue(sample, `not writable on stock firmware. User samples must start at slot ${E2S_FIRST_USER_DISPLAY_SLOT}.`, slot, 'slot');
       continue;
     }
 
@@ -708,17 +942,11 @@ function buildE2SAllBinary(samples, options = {}) {
       warnings.push(
         `Duplicate slot ${slot}: "${(existing && existing.name) || 'Unknown'}" conflicts with "${sample.name || 'Unknown'}".`
       );
-      validationErrors += 1;
+      recordIssue(sample, `conflicts with "${(existing && existing.name) || 'Unknown'}".`, slot, 'slot');
       continue;
     }
 
     bySlot.set(slot, sample);
-  }
-
-  if (strict && validationErrors > 0) {
-    throw new Error(
-      `Export aborted: found ${validationErrors} slot assignment issue(s). Please fix duplicate/invalid slot numbers and export again.`
-    );
   }
 
   const chunks = [];
@@ -757,6 +985,7 @@ function buildE2SAllBinary(samples, options = {}) {
     if (!wavBuffer || wavBuffer.length < 12 || wavBuffer.toString('ascii', 0, 4) !== 'RIFF') {
       warnings.push(`Slot ${slot}: missing or non-RIFF source for "${(sample && sample.name) || 'Unknown'}".`);
       skippedSamples += 1;
+      recordIssue(sample, 'missing or non-RIFF source.', slot, 'source');
       continue;
     }
 
@@ -767,11 +996,22 @@ function buildE2SAllBinary(samples, options = {}) {
       sample && sample.name,
       sample,
       sourceMetadata,
-      options,
+      {
+        ...options,
+        onAutoTrimmed: (trimInfo) => {
+          const trimmedSeconds = Number(trimInfo && trimInfo.trimmedDurationSec) || 0;
+          if (trimmedSeconds > 0) {
+            warnings.push(
+              `Slot ${slot}: auto-trimmed ${trimmedSeconds.toFixed(2)}s of silence from "${(sample && sample.name) || 'Unknown'}" before export.`
+            );
+          }
+        },
+      },
     );
     if (!normalizedWavBuffer) {
       warnings.push(`Slot ${slot}: invalid RIFF layout for "${(sample && sample.name) || 'Unknown'}".`);
       skippedSamples += 1;
+      recordIssue(sample, 'invalid RIFF layout.', slot, 'layout');
       continue;
     }
 
@@ -786,10 +1026,10 @@ function buildE2SAllBinary(samples, options = {}) {
     }
   }
 
-  if (strict && skippedSamples > 0) {
-    throw new Error(
-      `Export aborted: ${skippedSamples} sample(s) could not be encoded as valid RIFF/e2s data. Fix listed warnings and try again.`
-    );
+  if (strict && exportIssues.length > 0) {
+    const error = new Error(formatExportIssues(exportIssues));
+    error.exportIssues = exportIssues;
+    throw error;
   }
 
   const binary = Buffer.concat([header, ...chunks]);
@@ -1167,6 +1407,60 @@ function resolveSampleCopySource(sample) {
   };
 }
 
+ipcMain.handle('estimate-export-autotrim', async (event, payload) => {
+  try {
+    if (!payload || typeof payload !== 'object') {
+      return { ok: false, message: 'Invalid auto-trim estimation payload.', estimates: [] };
+    }
+
+    const shouldConvert = payload.shouldConvert !== false;
+    const conversion = payload.conversion || {};
+    const samples = Array.isArray(payload.samples) ? payload.samples : [];
+    const estimates = [];
+
+    for (const sample of samples) {
+      const index = Number(sample && sample.index);
+      if (!Number.isFinite(index) || index < 0) continue;
+
+      let trimRatio = 1;
+      let trimmedDurationSec = 0;
+
+      if (shouldConvert) {
+        try {
+          const source = resolveSampleCopySource(sample);
+          const sourceBuffer = source.buffer ? source.buffer : fs.readFileSync(source.sourcePath);
+          const trimRange = detectAutoTrimRange(sourceBuffer, conversion);
+
+          if (trimRange && trimRange.trimmed && trimRange.totalFrames > 0) {
+            const keptFrames = Math.max(1, trimRange.endFrameExclusive - trimRange.startFrame);
+            trimRatio = Math.max(0.0001, Math.min(1, keptFrames / trimRange.totalFrames));
+            const sampleRate = trimRange.parsed && Number(trimRange.parsed.sampleRate) > 0 ? Number(trimRange.parsed.sampleRate) : 0;
+            if (sampleRate > 0) {
+              trimmedDurationSec = Math.max(0, (trimRange.totalFrames - keptFrames) / sampleRate);
+            }
+          }
+        } catch {
+          // Fallback to ratio=1 when source probing fails.
+        }
+      }
+
+      estimates.push({
+        index: Math.trunc(index),
+        trimRatio,
+        trimmedDurationSec,
+      });
+    }
+
+    return { ok: true, estimates };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error && error.message ? error.message : 'Failed to estimate auto-trim sizes.',
+      estimates: [],
+    };
+  }
+});
+
 function exportSamplesAsSortedFolders(samples, outputDirectory, parentFolderName, options = {}) {
   const warnings = [];
   const rootFolder = path.join(outputDirectory, parentFolderName);
@@ -1194,7 +1488,16 @@ function exportSamplesAsSortedFolders(samples, outputDirectory, parentFolderName
 
       if (shouldConvert) {
         const sourceBuffer = source.buffer ? source.buffer : fs.readFileSync(source.sourcePath);
-        const convertedBuffer = convertWavBufferForE2S(sourceBuffer, conversion);
+        const convertedBuffer = convertWavBufferForE2S(sourceBuffer, conversion, {
+          onAutoTrimmed: (trimInfo) => {
+            const trimmedSeconds = Number(trimInfo && trimInfo.trimmedDurationSec) || 0;
+            if (trimmedSeconds > 0) {
+              warnings.push(
+                `Auto-trimmed ${trimmedSeconds.toFixed(2)}s of silence from "${sample.name || 'unknown'}" before folder export.`
+              );
+            }
+          },
+        });
         if (!convertedBuffer) {
           warnings.push(`Could not convert sample "${sample.name || 'unknown'}". Copied original instead.`);
           if (source.buffer) {
@@ -1295,7 +1598,8 @@ ipcMain.handle('export-e2s-all', async (event, payload) => {
   } catch (error) {
     return {
       ok: false,
-      message: error && error.message ? error.message : 'Failed to export e2s.all.'
+      message: error && error.message ? error.message : 'Failed to export e2s.all.',
+      issueDetails: Array.isArray(error && error.exportIssues) ? error.exportIssues : [],
     };
   }
 });

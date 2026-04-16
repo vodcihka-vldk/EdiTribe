@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openE2sAllDialog: () => ipcRenderer.invoke('open-e2s-all-dialog'),
   getE2sEmbeddedAudioDataUrl: (payload) => ipcRenderer.invoke('get-e2s-embedded-audio-data-url', payload),
   trimAudioFile: (payload) => ipcRenderer.invoke('trim-audio-file', payload),
+  estimateExportAutotrim: (payload) => ipcRenderer.invoke('estimate-export-autotrim', payload),
   chooseExportDirectory: () => ipcRenderer.invoke('choose-export-directory'),
   exportE2sAll: (payload) => ipcRenderer.invoke('export-e2s-all', payload),
   saveAudioBufferAsWav: (payload) => ipcRenderer.invoke('save-audio-buffer-as-wav', payload),

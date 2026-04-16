@@ -434,6 +434,11 @@
   text-align: right;
   min-width: 150px;
 }
+
+.auto-trim-size {
+  color: #ffcb8b;
+  font-weight: 600;
+}
 .sample-name {
   font-weight: 600;
   color: #e6e6e6;
@@ -617,6 +622,109 @@
   text-align: left;
   margin: 8px 0 12px 0;
   line-height: 1.35;
+  white-space: pre-line;
+}
+
+.export-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #343d57;
+  border-radius: 10px;
+  background: rgba(18, 21, 33, 0.72);
+}
+
+.export-issue-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-issue-group-title {
+  color: #d8e0f5;
+  font-size: 0.9em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.export-issue-group-count {
+  color: #8fa3cf;
+  font-weight: 600;
+}
+
+.export-issue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-issue-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(35, 36, 58, 0.8);
+  color: #d8e0f5;
+}
+
+.export-issue-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.export-issue-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.77em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.export-issue-badge.bad {
+  background: rgba(255, 92, 122, 0.18);
+  color: #ff8da1;
+  border: 1px solid rgba(255, 92, 122, 0.35);
+}
+
+.export-issue-badge.warn {
+  background: rgba(255, 184, 108, 0.16);
+  color: #ffcb8b;
+  border: 1px solid rgba(255, 184, 108, 0.3);
+}
+
+.export-issue-badge.info {
+  background: rgba(139, 233, 253, 0.14);
+  color: #8be9fd;
+  border: 1px solid rgba(139, 233, 253, 0.28);
+}
+
+.export-issue-text {
+  color: #f1f5ff;
+  font-weight: 500;
+  word-break: break-word;
+  flex: 1 1 auto;
+}
+
+.export-issue-reason {
+  color: #a8b3d1;
+  font-size: 9.5pt;
+  line-height: 1.4;
+  margin-left: 0;
+  padding-left: 0;
+  font-weight: 400;
 }
 .export-actions-row {
   display: flex;

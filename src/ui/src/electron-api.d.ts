@@ -49,6 +49,34 @@ interface ElectronAPI {
     channels?: number;
     message?: string;
   }>;
+  estimateExportAutotrim: (payload: {
+    shouldConvert: boolean;
+    conversion?: {
+      format?: string;
+      sampleRate?: number;
+      bitDepth?: number;
+      channels?: number;
+      type?: string;
+      volume?: string;
+    };
+    samples: Array<{
+      index: number;
+      name: string;
+      path: string;
+      sourceKind?: string;
+      sourceAllPath?: string;
+      sourceOffset?: number;
+      sourceLength?: number;
+    }>;
+  }) => Promise<{
+    ok: boolean;
+    message?: string;
+    estimates: Array<{
+      index: number;
+      trimRatio: number;
+      trimmedDurationSec: number;
+    }>;
+  }>;
   chooseExportDirectory: () => Promise<string | null>;
   exportE2sAll: (payload: {
     outputDirectory: string;
@@ -80,6 +108,12 @@ interface ElectronAPI {
     outPath?: string;
     warnings?: string[];
     message?: string;
+    issueDetails?: Array<{
+      slot: number | null;
+      sample: string;
+      reason: string;
+      kind?: 'slot' | 'source' | 'layout' | 'other';
+    }>;
     summary?: {
       shouldConvert?: boolean;
       conversion?: {

@@ -40,11 +40,15 @@ It is built to make large sample workflows practical: import audio from many for
 
 #### Windows
 
-Download the latest `Editribe.Setup.exe` from the [Releases](https://github.com/sabsimilian/EdiTribe/releases) page and run the installer.
+Download the latest `Editribe.Setup.exe` from the [Releases](https://github.com/vodcihka-vldk/EdiTribe/releases) page and run the installer.
 
 #### macOS
 
-Prebuilt macOS artifacts are not published in upstream releases yet.
+macOS release artifacts are published automatically from tagged releases in this fork.
+
+Current release tags include:
+
+- `v0.1.5` and newer for ZIP + DMG artifacts
 
 Build locally:
 
@@ -54,9 +58,9 @@ Build locally:
   - `cd src/ui && npm install && cd ../..`
 3. Build and package for macOS:
   - `npm run dist:mac`
-4. Find output artifacts in `dist/` (`.zip` for Intel and Apple Silicon).
+4. Build and package DMG as well if needed:
+  - `npm run dist:mac:dmg`
+5. Find output artifacts in `dist/` (`.zip` and `.dmg` for Intel and Apple Silicon).
 
-Optional DMG build:
-
-- `npm run dist:mac:dmg`
+The GitHub Actions workflow also publishes the same artifacts to the Releases page on tag pushes.
 
